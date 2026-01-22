@@ -1,14 +1,8 @@
 """
-Bank Marketing Propensity Model - Training Script
+Training script for bank marketing propensity model.
 
-This script handles the complete model training pipeline including:
-- Data loading and preprocessing with proper encoding
-- Advanced feature engineering
-- Model training with multiple algorithms (RandomForest, XGBoost, LightGBM)
-- Cross-validation for robust evaluation
-- Hyperparameter tuning
-- Class imbalance handling with SMOTE
-- Model comparison and selection
+Handles data loading, preprocessing, model training with multiple algos,
+cross-validation, hyperparameter tuning, and SMOTE for class imbalance.
 """
 
 import logging
@@ -21,26 +15,14 @@ import numpy as np
 import pandas as pd
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import (
-    accuracy_score,
-    classification_report,
-    confusion_matrix,
-    f1_score,
-    precision_score,
-    recall_score,
-    roc_auc_score,
-)
-from sklearn.model_selection import (
-    GridSearchCV,
-    RandomizedSearchCV,
-    StratifiedKFold,
-    cross_val_score,
-    train_test_split,
-)
+from sklearn.metrics import (accuracy_score, classification_report, confusion_matrix,
+                             f1_score, precision_score, recall_score, roc_auc_score)
+from sklearn.model_selection import (GridSearchCV, RandomizedSearchCV, StratifiedKFold,
+                                     cross_val_score, train_test_split)
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
-# Import XGBoost and LightGBM
+# optional deps - might not be installed
 try:
     import xgboost as xgb
     XGBOOST_AVAILABLE = True
@@ -53,7 +35,6 @@ try:
 except ImportError:
     LIGHTGBM_AVAILABLE = False
 
-# Import SMOTE for class imbalance
 try:
     from imblearn.over_sampling import SMOTE
     from imblearn.pipeline import Pipeline as ImbPipeline
@@ -64,23 +45,11 @@ except ImportError:
 import warnings
 warnings.filterwarnings('ignore')
 
-# Import configuration
-from config import (
-    DATA_CONFIG,
-    FEATURE_CONFIG,
-    LIGHTGBM_CONFIG,
-    LIGHTGBM_PARAM_GRID,
-    LOGGING_CONFIG,
-    MODEL_CONFIG,
-    OUTPUT_CONFIG,
-    RF_CONFIG,
-    RF_PARAM_GRID,
-    SMOTE_CONFIG,
-    XGBOOST_CONFIG,
-    XGBOOST_PARAM_GRID,
-)
+from config import (DATA_CONFIG, FEATURE_CONFIG, LIGHTGBM_CONFIG, LIGHTGBM_PARAM_GRID,
+                    LOGGING_CONFIG, MODEL_CONFIG, OUTPUT_CONFIG, RF_CONFIG, RF_PARAM_GRID,
+                    SMOTE_CONFIG, XGBOOST_CONFIG, XGBOOST_PARAM_GRID)
 
-# Configure logging
+# set up logging
 logging.basicConfig(
     level=getattr(logging, LOGGING_CONFIG["level"]),
     format=LOGGING_CONFIG["format"],
@@ -93,161 +62,129 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def load_data(filepath: Optional[str] = None) -> pd.DataFrame:
-    """
-    Load the training data with correct delimiter.
-    
-    Args:
-        filepath: Path to the data file. Defaults to config setting.
-        
-    Returns:
-        Loaded DataFrame
-    """
+def load_data(filepath=None):
+    """Load training data. Uses semicolon delimiter by default."""
     if filepath is None:
         filepath = DATA_CONFIG["train_file"]
     
-    # Use semicolon delimiter as specified in config
     delimiter = DATA_CONFIG.get("delimiter", ";")
     
-    logger.info(f"Loading data from {filepath} with delimiter '{delimiter}'")
+    logger.info(f"Loading data from {filepath}")
     df = pd.read_csv(filepath, delimiter=delimiter)
-    logger.info(f"Data loaded successfully: {df.shape[0]} rows, {df.shape[1]} columns")
+    logger.info(f"Loaded {df.shape[0]} rows, {df.shape[1]} cols")
     
     return df
 
 
-def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
+def engineer_features(df):
     """
-    Perform advanced feature engineering.
-    
-    Args:
-        df: Input DataFrame
-        
-    Returns:
-        DataFrame with engineered features
+    Create derived features from raw data.
+    Adds age groups, balance categories, etc.
     """
     data = df.copy()
     
     if not FEATURE_CONFIG.get("create_features", True):
         return data
     
-    logger.info("Performing feature engineering...")
+    logger.info("Engineering features...")
     
-    # Age groups
+    # age buckets
     data['age_group'] = pd.cut(
         data['age'], 
         bins=[0, 25, 35, 45, 55, 65, 100],
         labels=['18-25', '26-35', '36-45', '46-55', '56-65', '65+']
     )
     
-    # Balance categories
+    # balance buckets
     data['balance_category'] = pd.cut(
         data['balance'],
         bins=[-np.inf, 0, 500, 2000, 10000, np.inf],
         labels=['negative', 'low', 'medium', 'high', 'very_high']
     )
     
-    # Duration categories (contact duration)
+    # call duration buckets
     data['duration_category'] = pd.cut(
         data['duration'],
         bins=[0, 60, 180, 300, 600, np.inf],
         labels=['very_short', 'short', 'medium', 'long', 'very_long']
     )
     
-    # Campaign intensity
+    # how many times contacted
     data['campaign_intensity'] = pd.cut(
         data['campaign'],
         bins=[0, 1, 3, 5, np.inf],
         labels=['single', 'low', 'medium', 'high']
     )
     
-    # Contact recency (based on pdays)
+    # when was last contact
     data['contact_recency'] = data['pdays'].apply(
         lambda x: 'never_contacted' if x == -1 else (
-            'recent' if x <= 30 else (
-                'moderate' if x <= 180 else 'long_ago'
-            )
+            'recent' if x <= 30 else ('moderate' if x <= 180 else 'long_ago')
         )
     )
     
-    # Previous contact success indicator
+    # binary indicators
     data['had_previous_contact'] = (data['previous'] > 0).astype(int)
-    
-    # Interaction features
     data['balance_per_age'] = data['balance'] / (data['age'] + 1)
     data['duration_per_campaign'] = data['duration'] / (data['campaign'] + 1)
-    
-    # Binary features for certain conditions
     data['is_employed'] = (~data['job'].isin(['unemployed', 'student', 'retired'])).astype(int)
     data['has_loan'] = ((data['housing'] == 'yes') | (data['loan'] == 'yes')).astype(int)
     data['is_default'] = (data['default'] == 'yes').astype(int)
     
-    logger.info(f"Feature engineering complete. New shape: {data.shape}")
-    
+    logger.info(f"Feature engineering done. Shape: {data.shape}")
     return data
 
 
-def preprocess_data(
-    df: pd.DataFrame,
-    is_training: bool = True,
-    preprocessor: Optional[ColumnTransformer] = None
-) -> Tuple[pd.DataFrame, np.ndarray, ColumnTransformer, List[str]]:
+def preprocess_data(df, is_training=True, preprocessor=None):
     """
-    Preprocess the data with proper encoding and scaling.
-    
-    Args:
-        df: Input DataFrame
-        is_training: Whether this is training data
-        preprocessor: Pre-fitted preprocessor for test data
-        
-    Returns:
-        Tuple of (features DataFrame, target array, fitted preprocessor, feature names)
+    Preprocess data with proper encoding and scaling.
+    Returns X, y, preprocessor, and feature names.
     """
     data = df.copy()
     
-    # Extract target variable
+    # extract target
     target = None
     target_col = DATA_CONFIG.get("target_column", "y")
-    positive_class = DATA_CONFIG.get("positive_class", "yes")
+    pos_class = DATA_CONFIG.get("positive_class", "yes")
     
     if target_col in data.columns:
-        target = (data[target_col] == positive_class).astype(int).values
+        target = (data[target_col] == pos_class).astype(int).values
         data = data.drop(target_col, axis=1)
     
-    # Engineer features
+    # engineer features
     data = engineer_features(data)
     
-    # Identify feature types
-    nominal_features = FEATURE_CONFIG.get("nominal_features", [])
-    numerical_features = FEATURE_CONFIG.get("numerical_features", [])
+    # get feature lists
+    nominal = FEATURE_CONFIG.get("nominal_features", [])
+    numerical = FEATURE_CONFIG.get("numerical_features", [])
     
-    # Add engineered categorical features
-    engineered_categorical = ['age_group', 'balance_category', 'duration_category', 
-                             'campaign_intensity', 'contact_recency']
-    nominal_features = list(set(nominal_features + engineered_categorical))
+    # add engineered categoricals
+    eng_cat = ['age_group', 'balance_category', 'duration_category', 
+               'campaign_intensity', 'contact_recency']
+    nominal = list(set(nominal + eng_cat))
     
-    # Add engineered numerical features
-    engineered_numerical = ['balance_per_age', 'duration_per_campaign', 
-                           'had_previous_contact', 'is_employed', 'has_loan', 'is_default']
-    numerical_features = list(set(numerical_features + engineered_numerical))
+    # add engineered numericals
+    eng_num = ['balance_per_age', 'duration_per_campaign', 
+               'had_previous_contact', 'is_employed', 'has_loan', 'is_default']
+    numerical = list(set(numerical + eng_num))
     
-    # Filter to existing columns
-    nominal_features = [f for f in nominal_features if f in data.columns]
-    numerical_features = [f for f in numerical_features if f in data.columns]
+    # filter to existing cols only
+    nominal = [f for f in nominal if f in data.columns]
+    numerical = [f for f in numerical if f in data.columns]
     
-    logger.info(f"Nominal features: {nominal_features}")
-    logger.info(f"Numerical features: {numerical_features}")
+    logger.info(f"Nominal features: {nominal}")
+    logger.info(f"Numerical features: {numerical}")
     
-    # Convert categorical columns to string
-    for col in nominal_features:
+    # convert cats to string for encoder
+    for col in nominal:
         data[col] = data[col].astype(str)
     
-    # Create or use preprocessor
+    # build or use preprocessor
     if is_training or preprocessor is None:
         preprocessor = ColumnTransformer(
             transformers=[
-                ('num', StandardScaler(), numerical_features),
-                ('cat', OneHotEncoder(handle_unknown='ignore', sparse_output=False), nominal_features)
+                ('num', StandardScaler(), numerical),
+                ('cat', OneHotEncoder(handle_unknown='ignore', sparse_output=False), nominal)
             ],
             remainder='drop'
         )
@@ -255,226 +192,125 @@ def preprocess_data(
     else:
         X = preprocessor.transform(data)
     
-    # Get feature names
-    feature_names = numerical_features.copy()
+    # get feature names
+    feature_names = numerical.copy()
     if hasattr(preprocessor.named_transformers_['cat'], 'get_feature_names_out'):
         try:
-            cat_features = preprocessor.named_transformers_['cat'].get_feature_names_out()
-            feature_names.extend(cat_features.tolist())
-        except Exception:
-            # Fallback if feature names don't match
-            cat_features = preprocessor.get_feature_names_out()
-            feature_names = list(cat_features)
+            cat_feats = preprocessor.named_transformers_['cat'].get_feature_names_out()
+            feature_names.extend(cat_feats.tolist())
+        except:
+            # fallback
+            cat_feats = preprocessor.get_feature_names_out()
+            feature_names = list(cat_feats)
     
-    logger.info(f"Preprocessing complete. Feature matrix shape: {X.shape}")
-    
+    logger.info(f"Preprocessing done. Shape: {X.shape}")
     return X, target, preprocessor, feature_names
 
 
-def apply_smote(
-    X_train: np.ndarray, 
-    y_train: np.ndarray
-) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Apply SMOTE to handle class imbalance.
-    
-    Args:
-        X_train: Training features
-        y_train: Training labels
-        
-    Returns:
-        Tuple of resampled (X, y)
-    """
+def apply_smote(X_train, y_train):
+    """Apply SMOTE to balance classes."""
     if not SMOTE_AVAILABLE:
-        logger.warning("SMOTE not available. Install imbalanced-learn: pip install imbalanced-learn")
+        logger.warning("SMOTE not available. pip install imbalanced-learn")
         return X_train, y_train
     
-    logger.info(f"Class distribution before SMOTE: {dict(zip(*np.unique(y_train, return_counts=True)))}")
+    logger.info(f"Class dist before SMOTE: {dict(zip(*np.unique(y_train, return_counts=True)))}")
     
     smote = SMOTE(**SMOTE_CONFIG)
-    X_resampled, y_resampled = smote.fit_resample(X_train, y_train)
+    X_res, y_res = smote.fit_resample(X_train, y_train)
     
-    logger.info(f"Class distribution after SMOTE: {dict(zip(*np.unique(y_resampled, return_counts=True)))}")
-    
-    return X_resampled, y_resampled
+    logger.info(f"Class dist after SMOTE: {dict(zip(*np.unique(y_res, return_counts=True)))}")
+    return X_res, y_res
 
 
-def get_models() -> Dict[str, Any]:
-    """
-    Get dictionary of available models with their configurations.
-    
-    Returns:
-        Dictionary mapping model names to model instances
-    """
-    models = {
-        'RandomForest': RandomForestClassifier(**RF_CONFIG)
-    }
+def get_models():
+    """Get dict of available models."""
+    models = {'RandomForest': RandomForestClassifier(**RF_CONFIG)}
     
     if XGBOOST_AVAILABLE:
-        # Calculate scale_pos_weight for imbalanced data (will be set during training)
         models['XGBoost'] = xgb.XGBClassifier(**XGBOOST_CONFIG)
     else:
-        logger.warning("XGBoost not available. Install with: pip install xgboost")
+        logger.warning("XGBoost not available")
     
     if LIGHTGBM_AVAILABLE:
         models['LightGBM'] = lgb.LGBMClassifier(**LIGHTGBM_CONFIG)
     else:
-        logger.warning("LightGBM not available. Install with: pip install lightgbm")
+        logger.warning("LightGBM not available")
     
     return models
 
 
-def cross_validate_model(
-    model: Any, 
-    X: np.ndarray, 
-    y: np.ndarray, 
-    cv_folds: int = 5
-) -> Dict[str, float]:
-    """
-    Perform k-fold cross-validation.
-    
-    Args:
-        model: Model to evaluate
-        X: Features
-        y: Labels
-        cv_folds: Number of CV folds
-        
-    Returns:
-        Dictionary with CV scores
-    """
-    logger.info(f"Performing {cv_folds}-fold cross-validation...")
+def cross_validate_model(model, X, y, cv_folds=5):
+    """Run k-fold CV and return scores."""
+    logger.info(f"Running {cv_folds}-fold CV...")
     
     cv = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=MODEL_CONFIG["random_state"])
     
-    # Multiple scoring metrics
-    scoring_metrics = ['accuracy', 'precision', 'recall', 'f1', 'roc_auc']
-    cv_results = {}
+    metrics = ['accuracy', 'precision', 'recall', 'f1', 'roc_auc']
+    results = {}
     
-    for metric in scoring_metrics:
+    for metric in metrics:
         scores = cross_val_score(model, X, y, cv=cv, scoring=metric, n_jobs=-1)
-        cv_results[f'{metric}_mean'] = scores.mean()
-        cv_results[f'{metric}_std'] = scores.std()
+        results[f'{metric}_mean'] = scores.mean()
+        results[f'{metric}_std'] = scores.std()
         logger.info(f"  {metric}: {scores.mean():.4f} (+/- {scores.std()*2:.4f})")
     
-    return cv_results
+    return results
 
 
-def tune_hyperparameters(
-    model: Any,
-    X: np.ndarray,
-    y: np.ndarray,
-    param_grid: Dict[str, List[Any]],
-    model_name: str,
-    use_random_search: bool = True,
-    n_iter: int = 20
-) -> Tuple[Any, Dict[str, Any]]:
-    """
-    Perform hyperparameter tuning using GridSearchCV or RandomizedSearchCV.
-    
-    Args:
-        model: Base model
-        X: Features
-        y: Labels
-        param_grid: Parameter grid
-        model_name: Name of the model
-        use_random_search: Whether to use RandomizedSearchCV
-        n_iter: Number of iterations for random search
-        
-    Returns:
-        Tuple of (best model, best parameters)
-    """
-    logger.info(f"Tuning hyperparameters for {model_name}...")
+def tune_hyperparameters(model, X, y, param_grid, model_name, 
+                         use_random_search=True, n_iter=20):
+    """Tune hyperparameters with grid or random search."""
+    logger.info(f"Tuning {model_name}...")
     
     cv = StratifiedKFold(n_splits=MODEL_CONFIG["cv_folds"], shuffle=True, 
                          random_state=MODEL_CONFIG["random_state"])
     
     if use_random_search:
         search = RandomizedSearchCV(
-            model,
-            param_distributions=param_grid,
-            n_iter=n_iter,
-            cv=cv,
-            scoring=MODEL_CONFIG["scoring_metric"],
-            n_jobs=-1,
-            random_state=MODEL_CONFIG["random_state"],
-            verbose=1
+            model, param_distributions=param_grid, n_iter=n_iter,
+            cv=cv, scoring=MODEL_CONFIG["scoring_metric"],
+            n_jobs=-1, random_state=MODEL_CONFIG["random_state"], verbose=1
         )
     else:
         search = GridSearchCV(
-            model,
-            param_grid=param_grid,
-            cv=cv,
-            scoring=MODEL_CONFIG["scoring_metric"],
-            n_jobs=-1,
-            verbose=1
+            model, param_grid=param_grid, cv=cv,
+            scoring=MODEL_CONFIG["scoring_metric"], n_jobs=-1, verbose=1
         )
     
     search.fit(X, y)
     
-    logger.info(f"Best {model_name} parameters: {search.best_params_}")
-    logger.info(f"Best {model_name} CV score: {search.best_score_:.4f}")
+    logger.info(f"Best params: {search.best_params_}")
+    logger.info(f"Best CV score: {search.best_score_:.4f}")
     
     return search.best_estimator_, search.best_params_
 
 
-def train_single_model(
-    model: Any,
-    X_train: np.ndarray,
-    y_train: np.ndarray,
-    model_name: str
-) -> Any:
-    """
-    Train a single model.
-    
-    Args:
-        model: Model to train
-        X_train: Training features
-        y_train: Training labels
-        model_name: Name of the model
-        
-    Returns:
-        Trained model
-    """
+def train_single_model(model, X_train, y_train, model_name):
+    """Train a single model."""
     logger.info(f"Training {model_name}...")
     model.fit(X_train, y_train)
     logger.info(f"{model_name} training complete")
     return model
 
 
-def evaluate_model(
-    model: Any,
-    X_test: np.ndarray,
-    y_test: np.ndarray,
-    model_name: str
-) -> Dict[str, float]:
-    """
-    Evaluate model performance on test data.
-    
-    Args:
-        model: Trained model
-        X_test: Test features
-        y_test: Test labels
-        model_name: Name of the model
-        
-    Returns:
-        Dictionary with evaluation metrics
-    """
+def evaluate_model(model, X_test, y_test, model_name):
+    """Evaluate model on test set."""
     y_pred = model.predict(X_test)
-    y_pred_proba = model.predict_proba(X_test)[:, 1]
+    y_proba = model.predict_proba(X_test)[:, 1]
     
     metrics = {
         'accuracy': accuracy_score(y_test, y_pred),
         'precision': precision_score(y_test, y_pred, zero_division=0),
         'recall': recall_score(y_test, y_pred, zero_division=0),
         'f1': f1_score(y_test, y_pred, zero_division=0),
-        'roc_auc': roc_auc_score(y_test, y_pred_proba)
+        'roc_auc': roc_auc_score(y_test, y_proba)
     }
     
     logger.info(f"\n{'='*50}")
     logger.info(f"{model_name} Test Performance:")
     logger.info(f"{'='*50}")
-    for metric, value in metrics.items():
-        logger.info(f"  {metric}: {value:.4f}")
+    for k, v in metrics.items():
+        logger.info(f"  {k}: {v:.4f}")
     
     logger.info(f"\nClassification Report:\n{classification_report(y_test, y_pred)}")
     logger.info(f"Confusion Matrix:\n{confusion_matrix(y_test, y_pred)}")
@@ -482,57 +318,30 @@ def evaluate_model(
     return metrics
 
 
-def compare_models(
-    models_results: Dict[str, Dict[str, float]]
-) -> str:
-    """
-    Compare multiple models and select the best one.
-    
-    Args:
-        models_results: Dictionary mapping model names to their metrics
-        
-    Returns:
-        Name of the best model
-    """
+def compare_models(models_results):
+    """Compare models and pick the best one by ROC-AUC."""
     logger.info("\n" + "="*60)
     logger.info("MODEL COMPARISON")
     logger.info("="*60)
     
-    comparison_df = pd.DataFrame(models_results).T
-    logger.info(f"\n{comparison_df.to_string()}")
+    df = pd.DataFrame(models_results).T
+    logger.info(f"\n{df.to_string()}")
     
-    # Select best model based on ROC-AUC
-    best_model = max(models_results, key=lambda x: models_results[x]['roc_auc'])
-    logger.info(f"\nBest model (by ROC-AUC): {best_model}")
+    # best by roc_auc
+    best = max(models_results, key=lambda x: models_results[x]['roc_auc'])
+    logger.info(f"\nBest model (by ROC-AUC): {best}")
     
-    return best_model
+    return best
 
 
-def save_model(
-    model: Any,
-    preprocessor: ColumnTransformer,
-    feature_names: List[str],
-    model_name: str,
-    metrics: Dict[str, float],
-    filepath: Optional[str] = None
-) -> None:
-    """
-    Save trained model and preprocessing artifacts.
-    
-    Args:
-        model: Trained model
-        preprocessor: Fitted preprocessor
-        feature_names: List of feature names
-        model_name: Name of the model
-        metrics: Model performance metrics
-        filepath: Output file path
-    """
+def save_model(model, preprocessor, feature_names, model_name, metrics, filepath=None):
+    """Save model and artifacts to pickle."""
     if filepath is None:
         filepath = OUTPUT_CONFIG["model_path"]
     
     Path(filepath).parent.mkdir(parents=True, exist_ok=True)
     
-    model_artifacts = {
+    artifacts = {
         'model': model,
         'preprocessor': preprocessor,
         'feature_names': feature_names,
@@ -546,35 +355,24 @@ def save_model(
     }
     
     with open(filepath, 'wb') as f:
-        pickle.dump(model_artifacts, f)
+        pickle.dump(artifacts, f)
     
-    logger.info(f"Model artifacts saved to {filepath}")
+    logger.info(f"Model saved to {filepath}")
 
 
-def main(
-    tune_models: bool = False,
-    use_smote: bool = True,
-    compare_all: bool = True
-) -> None:
-    """
-    Main training pipeline.
-    
-    Args:
-        tune_models: Whether to perform hyperparameter tuning
-        use_smote: Whether to apply SMOTE for class imbalance
-        compare_all: Whether to compare all available models
-    """
+def main(tune_models=False, use_smote=True, compare_all=True):
+    """Main training pipeline."""
     logger.info("="*60)
-    logger.info("BANK MARKETING PROPENSITY MODEL TRAINING")
+    logger.info("BANK MARKETING PROPENSITY MODEL - TRAINING")
     logger.info("="*60 + "\n")
     
-    # Load data
+    # load data
     df = load_data()
     
-    # Preprocess data
+    # preprocess
     X, y, preprocessor, feature_names = preprocess_data(df, is_training=True)
     
-    # Train-test split
+    # train/test split
     X_train, X_test, y_train, y_test = train_test_split(
         X, y,
         test_size=MODEL_CONFIG["test_size"],
@@ -582,17 +380,17 @@ def main(
         stratify=y
     )
     
-    logger.info(f"Training set: {X_train.shape}")
+    logger.info(f"Train set: {X_train.shape}")
     logger.info(f"Test set: {X_test.shape}")
-    logger.info(f"Target distribution: {dict(zip(*np.unique(y, return_counts=True)))}")
+    logger.info(f"Target dist: {dict(zip(*np.unique(y, return_counts=True)))}")
     
-    # Apply SMOTE if enabled
+    # apply SMOTE if enabled
     if use_smote:
-        X_train_resampled, y_train_resampled = apply_smote(X_train, y_train)
+        X_train_res, y_train_res = apply_smote(X_train, y_train)
     else:
-        X_train_resampled, y_train_resampled = X_train, y_train
+        X_train_res, y_train_res = X_train, y_train
     
-    # Get models
+    # get models
     models = get_models()
     param_grids = {
         'RandomForest': RF_PARAM_GRID,
@@ -600,68 +398,63 @@ def main(
         'LightGBM': LIGHTGBM_PARAM_GRID if LIGHTGBM_AVAILABLE else {}
     }
     
-    # Train and evaluate models
-    models_results = {}
-    trained_models = {}
+    # train and evaluate
+    results = {}
+    trained = {}
     
-    for model_name, model in models.items():
+    for name, model in models.items():
         logger.info(f"\n{'='*50}")
-        logger.info(f"Processing {model_name}")
+        logger.info(f"Processing {name}")
         logger.info(f"{'='*50}")
         
-        # Hyperparameter tuning
-        if tune_models and model_name in param_grids and param_grids[model_name]:
-            model, best_params = tune_hyperparameters(
-                model, X_train_resampled, y_train_resampled,
-                param_grids[model_name], model_name,
+        # tune if requested
+        if tune_models and name in param_grids and param_grids[name]:
+            model, _ = tune_hyperparameters(
+                model, X_train_res, y_train_res,
+                param_grids[name], name,
                 use_random_search=True, n_iter=10
             )
         else:
-            # Train without tuning
-            model = train_single_model(model, X_train_resampled, y_train_resampled, model_name)
+            model = train_single_model(model, X_train_res, y_train_res, name)
         
-        # Cross-validation
-        cv_results = cross_validate_model(model, X_train_resampled, y_train_resampled, 
-                                          MODEL_CONFIG["cv_folds"])
+        # cross-validate
+        cross_validate_model(model, X_train_res, y_train_res, MODEL_CONFIG["cv_folds"])
         
-        # Evaluate on test set
-        test_metrics = evaluate_model(model, X_test, y_test, model_name)
+        # test set eval
+        test_metrics = evaluate_model(model, X_test, y_test, name)
         
-        models_results[model_name] = test_metrics
-        trained_models[model_name] = model
+        results[name] = test_metrics
+        trained[name] = model
         
         if not compare_all:
-            break  # Only train the first model
+            break  # just train one model
     
-    # Compare models and select the best
-    if len(models_results) > 1:
-        best_model_name = compare_models(models_results)
+    # pick best
+    if len(results) > 1:
+        best_name = compare_models(results)
     else:
-        best_model_name = list(models_results.keys())[0]
+        best_name = list(results.keys())[0]
     
-    best_model = trained_models[best_model_name]
-    best_metrics = models_results[best_model_name]
+    best_model = trained[best_name]
+    best_metrics = results[best_name]
     
-    # Save the best model
-    save_model(
-        best_model, preprocessor, feature_names,
-        best_model_name, best_metrics
-    )
+    # save
+    save_model(best_model, preprocessor, feature_names, best_name, best_metrics)
     
     logger.info("\n" + "="*60)
     logger.info("TRAINING COMPLETE")
     logger.info("="*60)
-    logger.info(f"Best model: {best_model_name}")
+    logger.info(f"Best model: {best_name}")
     logger.info(f"ROC-AUC: {best_metrics['roc_auc']:.4f}")
 
 
 if __name__ == "__main__":
     import argparse
     
-    parser = argparse.ArgumentParser(description='Train Bank Marketing Propensity Model')
-    parser.add_argument('--tune', action='store_true', help='Perform hyperparameter tuning')
+    parser = argparse.ArgumentParser(description='Train propensity model')
+    parser.add_argument('--tune', action='store_true', help='Tune hyperparameters')
     parser.add_argument('--no-smote', action='store_true', help='Disable SMOTE')
-    parser.add_argument('--single-model', action='store_true', help='Train only RandomForest')
+    parser.add_argument('--single-model', action='store_true', help='Only train RandomForest')
     
     args = parser.parse_args()
     

@@ -1,19 +1,17 @@
 """
-Bank Marketing Propensity Model - PostgreSQL Integration
+PostgreSQL integration for the propensity model.
+Handles connections, data storage, and queries.
 
-This script handles database operations including:
-- Connection management with proper error handling
-- Data ingestion and validation
-- Prediction storage
-- Query execution with logging
+v1.0 - Jan 2026
 """
 
 import logging
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Dict, Optional, Any
 
 import pandas as pd
 
+# optional deps
 try:
     import psycopg2
     from psycopg2 import sql
@@ -23,7 +21,6 @@ except ImportError:
 
 try:
     from sqlalchemy import create_engine
-    from sqlalchemy.engine import Engine
     SQLALCHEMY_AVAILABLE = True
 except ImportError:
     SQLALCHEMY_AVAILABLE = False
@@ -31,10 +28,9 @@ except ImportError:
 import warnings
 warnings.filterwarnings('ignore')
 
-# Import configuration
 from config import DB_CONFIG, LOGGING_CONFIG, OUTPUT_CONFIG
 
-# Configure logging
+# logging
 logging.basicConfig(
     level=getattr(logging, LOGGING_CONFIG["level"]),
     format=LOGGING_CONFIG["format"],
@@ -48,57 +44,32 @@ logger = logging.getLogger(__name__)
 
 
 class PostgresConnector:
-    """PostgreSQL database connector for propensity model."""
+    """Database connector for propensity model data."""
     
-    def __init__(
-        self,
-        host: str,
-        database: str,
-        user: str,
-        password: str,
-        port: int = 5432
-    ) -> None:
-        """
-        Initialize database connection parameters.
-        
-        Args:
-            host: Database host
-            database: Database name
-            user: Database user
-            password: Database password
-            port: Database port (default: 5432)
-        """
+    def __init__(self, host, database, user, password, port=5432):
+        """Initialize connection params."""
         self.host = host
         self.database = database
         self.user = user
         self.password = password
         self.port = port
-        self.engine: Optional[Engine] = None
-        self.connection: Optional[Any] = None
+        self.engine = None
+        self.connection = None
         
-        logger.info(f"PostgresConnector initialized for {database}@{host}:{port}")
+        logger.info(f"PostgresConnector init: {database}@{host}:{port}")
     
-    def connect(self) -> bool:
-        """
-        Establish database connection.
-        
-        Returns:
-            True if connection successful, False otherwise
-        """
+    def connect(self):
+        """Establish database connection. Returns True on success."""
         if not PSYCOPG2_AVAILABLE or not SQLALCHEMY_AVAILABLE:
-            logger.error("Required database libraries not available. "
-                        "Install with: pip install psycopg2-binary sqlalchemy")
+            logger.error("Missing DB libs. pip install psycopg2-binary sqlalchemy")
             return False
         
         try:
-            # SQLAlchemy engine for pandas operations
-            connection_string = (
-                f"postgresql://{self.user}:{self.password}"
-                f"@{self.host}:{self.port}/{self.database}"
-            )
-            self.engine = create_engine(connection_string)
+            # sqlalchemy for pandas
+            conn_str = f"postgresql://{self.user}:{self.password}@{self.host}:{self.port}/{self.database}"
+            self.engine = create_engine(conn_str)
             
-            # psycopg2 connection for raw SQL
+            # psycopg2 for raw sql
             self.connection = psycopg2.connect(
                 host=self.host,
                 database=self.database,
@@ -107,28 +78,23 @@ class PostgresConnector:
                 port=self.port
             )
             
-            logger.info("Database connection established successfully")
+            logger.info("Connected successfully")
             return True
         
         except Exception as e:
-            logger.error(f"Error connecting to database: {e}")
+            logger.error(f"Connection error: {e}")
             return False
     
-    def create_tables(self) -> bool:
-        """
-        Create necessary tables for the propensity model.
-        
-        Returns:
-            True if tables created successfully
-        """
+    def create_tables(self):
+        """Create tables for the model. Returns True on success."""
         if not self.connection:
-            logger.error("No database connection. Call connect() first.")
+            logger.error("Not connected. Call connect() first.")
             return False
         
         try:
             cursor = self.connection.cursor()
             
-            # Customers table
+            # customers
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS customers (
                     customer_id SERIAL PRIMARY KEY,
@@ -144,7 +110,7 @@ class PostgresConnector:
                 )
             """)
             
-            # Campaigns table
+            # campaigns
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS campaigns (
                     campaign_id SERIAL PRIMARY KEY,
@@ -161,7 +127,7 @@ class PostgresConnector:
                 )
             """)
             
-            # Predictions table
+            # predictions
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS predictions (
                     prediction_id SERIAL PRIMARY KEY,
@@ -175,7 +141,7 @@ class PostgresConnector:
                 )
             """)
             
-            # Model performance table
+            # model performance tracking
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS model_performance (
                     performance_id SERIAL PRIMARY KEY,
@@ -193,7 +159,7 @@ class PostgresConnector:
                 )
             """)
             
-            # Feature importance table
+            # feature importance
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS feature_importance (
                     importance_id SERIAL PRIMARY KEY,
@@ -207,7 +173,7 @@ class PostgresConnector:
             """)
             
             self.connection.commit()
-            logger.info("Database tables created successfully")
+            logger.info("Tables created")
             return True
             
         except Exception as e:
@@ -215,117 +181,45 @@ class PostgresConnector:
             self.connection.rollback()
             return False
     
-    def load_data_to_db(
-        self,
-        df: pd.DataFrame,
-        table_name: str,
-        if_exists: str = 'append',
-        index: bool = False
-    ) -> bool:
-        """
-        Load pandas DataFrame to database table.
-        
-        Args:
-            df: DataFrame to load
-            table_name: Target table name
-            if_exists: What to do if table exists ('append', 'replace', 'fail')
-            index: Whether to write DataFrame index
-            
-        Returns:
-            True if data loaded successfully
-        """
+    def load_data_to_db(self, df, table_name, if_exists='append', index=False):
+        """Load DataFrame to table."""
         if not self.engine:
-            logger.error("No database engine. Call connect() first.")
+            logger.error("No engine. Call connect() first.")
             return False
         
         try:
-            df.to_sql(
-                table_name, 
-                self.engine, 
-                if_exists=if_exists, 
-                index=index
-            )
+            df.to_sql(table_name, self.engine, if_exists=if_exists, index=index)
             logger.info(f"Loaded {len(df)} rows to {table_name}")
             return True
-            
         except Exception as e:
-            logger.error(f"Error loading data to {table_name}: {e}")
+            logger.error(f"Error loading to {table_name}: {e}")
             return False
     
-    def execute_query(
-        self,
-        query: str,
-        params: Optional[Dict[str, Any]] = None
-    ) -> Optional[pd.DataFrame]:
-        """
-        Execute SQL query and return results as DataFrame.
-        
-        Args:
-            query: SQL query to execute
-            params: Query parameters (optional)
-            
-        Returns:
-            DataFrame with query results, or None on error
-        """
+    def execute_query(self, query, params=None):
+        """Execute query and return DataFrame."""
         if not self.engine:
-            logger.error("No database engine. Call connect() first.")
+            logger.error("No engine")
             return None
         
         try:
             df = pd.read_sql_query(query, self.engine, params=params)
             logger.info(f"Query returned {len(df)} rows")
             return df
-            
         except Exception as e:
-            logger.error(f"Error executing query: {e}")
+            logger.error(f"Query error: {e}")
             return None
     
-    def store_predictions(
-        self,
-        predictions_df: pd.DataFrame,
-        model_name: str = "Unknown",
-        model_version: str = "1.0"
-    ) -> bool:
-        """
-        Store model predictions in database.
-        
-        Args:
-            predictions_df: DataFrame with predictions
-            model_name: Name of the model used
-            model_version: Version of the model
-            
-        Returns:
-            True if predictions stored successfully
-        """
-        # Add model metadata
-        predictions_df = predictions_df.copy()
-        predictions_df['model_name'] = model_name
-        predictions_df['model_version'] = model_version
-        
-        return self.load_data_to_db(predictions_df, 'predictions', if_exists='append')
+    def store_predictions(self, predictions_df, model_name="Unknown", model_version="1.0"):
+        """Store predictions with model metadata."""
+        df = predictions_df.copy()
+        df['model_name'] = model_name
+        df['model_version'] = model_version
+        return self.load_data_to_db(df, 'predictions', if_exists='append')
     
-    def store_model_performance(
-        self,
-        metrics: Dict[str, float],
-        model_name: str,
-        model_version: str,
-        training_samples: int,
-        test_samples: int
-    ) -> bool:
-        """
-        Store model performance metrics in database.
-        
-        Args:
-            metrics: Dictionary of performance metrics
-            model_name: Name of the model
-            model_version: Version of the model
-            training_samples: Number of training samples
-            test_samples: Number of test samples
-            
-        Returns:
-            True if metrics stored successfully
-        """
-        performance_df = pd.DataFrame([{
+    def store_model_performance(self, metrics, model_name, model_version, 
+                                 training_samples, test_samples):
+        """Store model performance metrics."""
+        perf_df = pd.DataFrame([{
             'model_name': model_name,
             'model_version': model_version,
             'accuracy': metrics.get('accuracy'),
@@ -337,26 +231,10 @@ class PostgresConnector:
             'training_samples': training_samples,
             'test_samples': test_samples
         }])
-        
-        return self.load_data_to_db(performance_df, 'model_performance', if_exists='append')
+        return self.load_data_to_db(perf_df, 'model_performance', if_exists='append')
     
-    def store_feature_importance(
-        self,
-        importance_df: pd.DataFrame,
-        model_name: str,
-        model_version: str
-    ) -> bool:
-        """
-        Store feature importance scores in database.
-        
-        Args:
-            importance_df: DataFrame with feature importance
-            model_name: Name of the model
-            model_version: Version of the model
-            
-        Returns:
-            True if stored successfully
-        """
+    def store_feature_importance(self, importance_df, model_name, model_version):
+        """Store feature importance scores."""
         df = importance_df.copy()
         df['model_name'] = model_name
         df['model_version'] = model_version
@@ -365,60 +243,26 @@ class PostgresConnector:
             'feature': 'feature_name',
             'importance': 'importance_score'
         })
-        
         return self.load_data_to_db(df, 'feature_importance', if_exists='append')
     
-    def get_recent_predictions(
-        self,
-        limit: int = 100,
-        model_name: Optional[str] = None
-    ) -> Optional[pd.DataFrame]:
-        """
-        Get recent predictions from database.
-        
-        Args:
-            limit: Maximum number of records
-            model_name: Filter by model name (optional)
-            
-        Returns:
-            DataFrame with predictions
-        """
-        query = """
-            SELECT * FROM predictions 
-            WHERE 1=1
-        """
-        
+    def get_recent_predictions(self, limit=100, model_name=None):
+        """Get recent predictions."""
+        query = "SELECT * FROM predictions WHERE 1=1"
         if model_name:
             query += f" AND model_name = '{model_name}'"
-        
         query += f" ORDER BY prediction_date DESC LIMIT {limit}"
-        
         return self.execute_query(query)
     
-    def get_model_performance_history(
-        self,
-        model_name: Optional[str] = None
-    ) -> Optional[pd.DataFrame]:
-        """
-        Get model performance history.
-        
-        Args:
-            model_name: Filter by model name (optional)
-            
-        Returns:
-            DataFrame with performance history
-        """
+    def get_model_performance_history(self, model_name=None):
+        """Get model performance history."""
         query = "SELECT * FROM model_performance"
-        
         if model_name:
             query += f" WHERE model_name = '{model_name}'"
-        
         query += " ORDER BY evaluation_date DESC"
-        
         return self.execute_query(query)
     
-    def close(self) -> None:
-        """Close database connections."""
+    def close(self):
+        """Close all connections."""
         if self.connection:
             self.connection.close()
             logger.info("psycopg2 connection closed")
@@ -426,41 +270,32 @@ class PostgresConnector:
         if self.engine:
             self.engine.dispose()
             logger.info("SQLAlchemy engine disposed")
-        
-        logger.info("All database connections closed")
 
 
-def main() -> None:
-    """Example usage of PostgreSQL connector."""
+def main():
+    """Example usage."""
     logger.info("="*60)
-    logger.info("POSTGRESQL INTEGRATION EXAMPLE")
+    logger.info("POSTGRES INTEGRATION EXAMPLE")
     logger.info("="*60 + "\n")
     
-    # Initialize connector with config
     db = PostgresConnector(**DB_CONFIG)
     
-    # Connect to database
     if db.connect():
-        # Create tables
         db.create_tables()
         
-        # Example: Load sample data
-        # from train_model import load_data
+        # Example usage:
         # df = load_data()
         # db.load_data_to_db(df, 'customers')
-        
-        # Example: Store performance metrics
-        # metrics = {'accuracy': 0.85, 'precision': 0.75, 'recall': 0.80, 'f1': 0.77, 'roc_auc': 0.90}
+        # 
+        # metrics = {'accuracy': 0.85, 'precision': 0.75, ...}
         # db.store_model_performance(metrics, 'RandomForest', '1.0', 10000, 2000)
-        
-        # Example: Query data
+        # 
         # results = db.execute_query("SELECT * FROM customers LIMIT 10")
         # print(results)
         
-        # Close connection
         db.close()
     else:
-        logger.error("Failed to connect to database")
+        logger.error("Failed to connect")
 
 
 if __name__ == "__main__":
