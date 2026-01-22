@@ -8,6 +8,9 @@ scikit-learn>=1.2.0
 xgboost>=1.7.0
 lightgbm>=3.3.0
 
+# Class Imbalance Handling
+imbalanced-learn>=0.11.0
+
 # Database
 psycopg2-binary>=2.9.0
 sqlalchemy>=2.0.0
@@ -25,6 +28,6 @@ joblib>=1.2.0
 jupyter>=1.0.0
 ipykernel>=6.19.0
 
-# Testing (optional)
+# Testing
 pytest>=7.2.0
 pytest-cov>=4.0.0
